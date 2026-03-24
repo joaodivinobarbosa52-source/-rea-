@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Área Fácil Pro - GPS Ativo</title>
+
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+        }
+        body {
+            font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            background: #1a2a1f;
+            overflow: hidden;
+        }
+        .header {
+            background: #1b5e20;
+            padding: 12px;
+            display: flex;
+            gap: 10px;
+            z-index: 1000;
+            flex-wrap: wrap;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        }
+        .header input {
+            flex: 1;
+            padding: 12px 14px;
+            border-radius: 40px;
+            border: none;
+            font-size: 15px;
+            outline: none;
+            background: #f5f5f5;
+            font-weight: 500;
+        }
+        #map {
+            flex: 1;
+            width: 100%;
+            background: #2c3e2b;
+        }
+        .painel {
+            background: white;
+            padding: 14px 16px;
+            border-top: 4px solid #2e7d32;
+            z-index: 1000;
+            box-shadow: 0 -2px 12px rgba(0,0,0,0.1);
+        }
+        .info {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 12px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #1b5e20;
+            background: #e8f5e9;
+            padding: 8px 12px;
+            border-radius: 28px;
+        }
+        .grid-botoes {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        button {
+            padding: 14px;
+            border: none;
+            border-radius: 40px;
+            color: white;
+            font-weight: bold;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            background: #2c3e2b;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+        }
+        button:active { transform: scale(0.97); }
+        .btn-pdf { background: #37474f; grid-column: span 2; }
+        .btn-kml { background: #0b5e9e; }
+        .btn-csv { background: #2e7d32; }
+        .btn-limpar { background: #b71c1c; grid-column: span 2; margin-top: 4px; }
+
+        .leaflet-bar .btn-gps-manual {
+            background: white;
+            width: 34px;
+            height: 34px;
+            line-height: 34px;
+            font-size: 20px;
+            cursor: pointer;
+            border: 2px solid rgba(0,0,0,0.2);
+            border-radius: 4px;
+            display: block;
+            text-align: center;
+            text-decoration: none;
+            color: black;
+            font-weight: bold;
+        }
+        .gps-loading {
+            animation: pulse 0.6s infinite;
+            background: #ffe0b2 !important;
+        }
+        @keyframes pulse {
+            0% { opacity: 0.6; transform: scale(0.95);}
+            100% { opacity: 1; transform: scale(1);}
+        }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <input type="text" id="fazenda" placeholder="Nome da Fazenda" autocomplete="off">
+    <input type="text" id="safra" placeholder="Safra (ex: 24/25)" autocomplete="off">
+</div>
+
+<div id="map"></div>
+
+<div class="painel">
+    <div class="info">
+        <span id="txtArea">0.00 ha</span>
+        <span id="txtTalhoes">0 Talhões</span>
+    </div>
+    <div class="grid-botoes">
+        <button onclick="gerarPDF()" class="btn-pdf">📋 Relatório PDF</button>
+        <button onclick="exportarKML()" class="btn-kml">🌍 Google Earth (KML)</button>
+        <button onclick="exportarCSV()" class="btn-csv">📊 Planilha CSV</button>
+        <button onclick="limparMapa()" class="btn-limpar">🗑️ Apagar tudo</button>
+    </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
+
+<script>
+    const map = L.map('map').setView([-15.78, -47.92], 4);
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        attribution: 'Esri, Maxar',
+        maxZoom: 19
+    }).addTo(map);
+
+    const drawnItems = new L.FeatureGroup().addTo(map);
+
+    // MELHORIA PARA OS BICOS: Ajuste de precisão no desenho
+    const drawControl = new L.Control.Draw({
+        draw: {
+            polygon: {
+                allowIntersection: false,
+                drawError: { color: '#e1e100', message: '<strong>Erro:<strong> Áreas não podem se cruzar!' },
+                shapeOptions: { color: '#2e7d32', fillOpacity: 0.4, weight: 3 },
+                showArea: true,
+                metric: true,
+                repeatMode: false // Para permitir finalização precisa
+            },
+            polyline: false, rectangle: false, circle: false, marker: false, circlemarker: false
+        },
+        edit: { featureGroup: drawnItems, remove: true }
+    });
+    map.addControl(drawControl);
+
+    function calcularArea(layer) {
+        if (!layer) return 0;
+        return turf.area(layer.toGeoJSON()) / 10000;
+    }
+
+    function atualizarTotais() {
+        let areaTotal = 0;
+        drawnItems.eachLayer(layer => {
+            const areaHa = calcularArea(layer);
+            areaTotal += areaHa;
+            if (!layer.getTooltip()) {
+                layer.bindTooltip("", { permanent: true, direction: 'center', offset: [0, -5] });
+            }
+            layer.setTooltipContent(`<b>${layer.options.nome || "Talhão"}</b><br>${areaHa.toFixed(2)} ha`);
+        });
+        document.getElementById('txtArea').innerText = areaTotal.toFixed(2) + " ha";
+        document.getElementById('txtTalhoes').innerText = drawnItems.getLayers().length + " Talhão(ões)";
+    }
+
+    map.on('draw:created', function (e) {
+        const layer = e.layer;
+        const defaultName = "Talhão " + (drawnItems.getLayers().length + 1);
+        const nome = prompt("Nome do Talhão:", defaultName);
+        layer.options.nome = nome && nome.trim() ? nome.trim() : defaultName;
+        drawnItems.addLayer(layer);
+        atualizarTotais();
+    });
+
+    map.on('draw:edited', atualizarTotais);
+    map.on('draw:deleted', atualizarTotais);
+
+    // GPS 
+    const GpsControl = L.Control.extend({
+        options: { position: 'topleft' },
+        onAdd: function() {
+            const container = L.DomUtil.create('div', 'leaflet-bar');
+            const btn = L.DomUtil.create('a', 'btn-gps-manual', container);
+            btn.innerHTML = '📍';
+            btn.onclick = (e) => {
+                L.DomEvent.stopPropagation(e);
+                btn.classList.add('gps-loading');
+                map.locate({setView: true, maxZoom: 17, enableHighAccuracy: true});
+            };
+            return container;
+        }
+    });
+    map.addControl(new GpsControl());
+
+    map.on('locationfound', (e) => {
+        document.querySelector('.btn-gps-manual').classList.remove('gps-loading');
+        L.marker(e.latlng).addTo(map).bindPopup("Você está aqui").openPopup();
+    });
+
+    // FUNÇÕES DE EXPORTAÇÃO (MANTIDAS)
+    window.exportarCSV = function() {
+        let csv = "Talhao;Area_ha\n";
+        drawnItems.eachLayer(l => csv += `${l.options.nome};${calcularArea(l).toFixed(2)}\n`);
+        const blob = new Blob(["\uFEFF" + csv], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `relatorio_areas.csv`;
+        link.click();
+    };
+
+    window.exportarKML = function() {
+        let kml = `<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document>`;
+        drawnItems.eachLayer(l => {
+            const coords = l.getLatLngs()[0].map(p => `${p.lng},${p.lat},0`).join(" ");
+            kml += `<Placemark><name>${l.options.nome}</name><Polygon><outerBoundaryIs><LinearRing><coordinates>${coords}</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>`;
+        });
+        kml += `</Document></kml>`;
+        const blob = new Blob([kml], { type: "application/vnd.google-earth.kml+xml" });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `mapa.kml`;
+        link.click();
+    };
+
+    window.gerarPDF = function() {
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF();
+        const f = document.getElementById('fazenda').value || "Fazenda";
+        doc.text(`Relatório: ${f}`, 14, 20);
+        const corpo = [];
+        drawnItems.eachLayer(l => corpo.push([l.options.nome, calcularArea(l).toFixed(2) + " ha"]));
+        doc.autoTable({ head: [['Talhão', 'Área']], body: corpo, startY: 30 });
+        doc.save(`${f}.pdf`);
+    };
+
+    window.limparMapa = function() {
+        if (confirm("Apagar tudo?")) {
+            drawnItems.clearLayers();
+            atualizarTotais();
+        }
+    };
+</script>
+</body>
+</html>
